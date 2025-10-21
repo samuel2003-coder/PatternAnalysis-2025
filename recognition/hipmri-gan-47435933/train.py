@@ -15,6 +15,7 @@ from dataset import get_loader
 latent_dim = 100
 img_size = 64
 batch_size = 32
+# Try changing this to 5e-5 after
 lr = 1e-4
 n_epochs = 100
 n_critic = 5
@@ -37,6 +38,12 @@ D = Discriminator().to(device)
 
 optimizer_G = optim.Adam(G.parameters(), lr=lr, betas=(0.0, 0.9))
 optimizer_D = optim.Adam(D.parameters(), lr=lr, betas=(0.0, 0.9))
+
+# ----------------------
+# Fixed noise vectors for consistent validation & sample images
+# ----------------------
+fixed_z_samples = torch.randn(16, latent_dim, 1, 1).to(device)  # For saving generated sample images
+fixed_z_val     = torch.randn(batch_size, latent_dim, 1, 1).to(device)  # For validation SSIM
 
 # ----------------------
 # Training preparation
@@ -109,6 +116,7 @@ for epoch in range(1, n_epochs + 1):
             D_losses.append(loss_D_total.item())
             
             with torch.no_grad():
+                # Use random batch for per-iteration SSIM (optional)
                 ssim_score = ssim((gen_imgs + 1) / 2, (imgs + 1) / 2)
                 SSIM_scores.append(ssim_score.item())
 
@@ -116,38 +124,30 @@ for epoch in range(1, n_epochs + 1):
                   f"D: {loss_D_total.item():.4f}, G: {loss_G.item():.4f}, SSIM: {ssim_score.item():.4f}")
 
     # ---------------------
-    # Validation
+    # Validation using fixed_z_val for consistent SSIM
     # ---------------------
     G.eval()
     with torch.no_grad():
         val_ssim_sum = 0
-        for imgs in val_loader:
-            imgs = imgs.to(device)
-            z = torch.randn(imgs.size(0), latent_dim, 1, 1).to(device)
-            gen_imgs = G(z)
+        val_iter = iter(val_loader)
+        for i in range(len(val_loader)):
+            imgs = next(val_iter).to(device)
+            batch_size_val = imgs.size(0)
+            gen_imgs = G(fixed_z_val[:batch_size_val])  # Match batch size
             val_ssim_sum += ssim((gen_imgs + 1) / 2, (imgs + 1) / 2).item()
         val_avg_ssim = val_ssim_sum / len(val_loader)
         val_ssims.append(val_avg_ssim)
         print(f"Validation SSIM after Epoch {epoch}: {val_avg_ssim:.4f}")
 
-    # ---------------------
-    # Save generated samples
-    # ---------------------
-    with torch.no_grad():
-        z = torch.randn(16, latent_dim, 1, 1).to(device)
-        samples = G(z)
-        samples = (samples + 1) / 2
-        save_image(samples, f"generated_samples/epoch_{epoch}.png", nrow=4)
-
-    # ---------------------
-    # Save models every 10 epochs
-    # ---------------------
-    if epoch % 10 == 0:
-        torch.save(G.state_dict(), f"saved_models/G_epoch_{epoch}.pth")
-        torch.save(D.state_dict(), f"saved_models/D_epoch_{epoch}.pth")
+# ----------------------
+# Training Loop
+# ----------------------
+for epoch in range(1, n_epochs + 1):
+    # training code...
+    # validation code...
 
 # ----------------------
-# Testing phase
+# Testing phase (after all epochs)
 # ----------------------
 G.eval()
 with torch.no_grad():
@@ -160,27 +160,4 @@ with torch.no_grad():
     test_avg_ssim = test_ssim_sum / len(test_loader)
     test_ssims.append(test_avg_ssim)
     print(f"\nFinal Test SSIM: {test_avg_ssim:.4f}")
-
-# ----------------------
-# Plot Losses & SSIM
-# ----------------------
-plt.figure(figsize=(10,5))
-plt.plot(G_losses, label="Generator")
-plt.plot(D_losses, label="Discriminator")
-plt.xlabel("Iterations")
-plt.ylabel("Loss")
-plt.legend()
-plt.tight_layout()
-plt.savefig("generated_samples/loss_curve.png")
-plt.close()
-
-plt.figure()
-plt.plot(SSIM_scores, label="Train SSIM (per 100 iters)")
-plt.plot(val_ssims, label="Validation SSIM (per epoch)")
-plt.xlabel("Iterations/Epochs")
-plt.ylabel("SSIM")
-plt.legend()
-plt.tight_layout()
-plt.savefig("generated_samples/ssim_curve.png")
-plt.close()
 
