@@ -14,11 +14,11 @@ from dataset import get_loader
 # ----------------------
 latent_dim = 100
 img_size = 64
-batch_size = 32
-# Try changing this to 5e-5 after
-lr = 1e-4
+batch_size = 128
+lr_d = 1e-4
+lr_g = 5e-5
 n_epochs = 100
-n_critic = 5
+n_critic = 3
 lambda_gp = 10
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -36,8 +36,8 @@ test_loader  = get_loader(os.path.join(base_dir, "keras_slices_test"), batch_siz
 G = Generator(latent_dim=latent_dim).to(device)
 D = Discriminator().to(device)
 
-optimizer_G = optim.Adam(G.parameters(), lr=lr, betas=(0.0, 0.9))
-optimizer_D = optim.Adam(D.parameters(), lr=lr, betas=(0.0, 0.9))
+optimizer_G = optim.Adam(G.parameters(), lr=lr_g, betas=(0.0, 0.9))
+optimizer_D = optim.Adam(D.parameters(), lr=lr_d, betas=(0.0, 0.9))
 
 # ----------------------
 # Fixed noise vectors for consistent validation & sample images
@@ -139,12 +139,6 @@ for epoch in range(1, n_epochs + 1):
         val_ssims.append(val_avg_ssim)
         print(f"Validation SSIM after Epoch {epoch}: {val_avg_ssim:.4f}")
 
-# ----------------------
-# Training Loop
-# ----------------------
-for epoch in range(1, n_epochs + 1):
-    # training code...
-    # validation code...
 
 # ----------------------
 # Testing phase (after all epochs)

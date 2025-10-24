@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 # ----------------------
-# Generator (slightly deeper, keeping 64x64 output)
+# Generator (slightly deeper
 # ----------------------
 class Generator(nn.Module):
     def __init__(self, latent_dim=100, img_channels=1, feature_g=64):
