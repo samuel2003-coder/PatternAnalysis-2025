@@ -1,190 +1,280 @@
+"""
+WGAN-GP modules for prostate MRI generation
+"""
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-# ----------------------
-# Generator (slightly deeper
-# ----------------------
+
+"""
+Generator Class: transforms random noise vector into a full sized image through upsampling (Conv2d)
+Parameters: latent_dim - dimension of random noise vector
+            img_channels - number of output image channels in final layer (1 for grayscale)
+            feature_maps - number of feature maps in each convolutional layer
+"""
 class Generator(nn.Module):
-    def __init__(self, latent_dim=100, img_channels=1, feature_g=64):
+    def __init__(self, latent_dim=128, img_channels=1, feature_maps=64):
         super(Generator, self).__init__()
-        # Defining generator as a stack of convolutional transpose layers (upsampling)
-        self.model = nn.Sequential(
-            # Input: latent vector (latent_dim x 1 x 1)
-            # Output: 512 x 4 x 4
-            nn.ConvTranspose2d(
-                in_channels=latent_dim,
-                out_channels=feature_g*16,  # Slightly more feature maps
-                kernel_size=4,
-                stride=1,
-                padding=0,
-                bias=False
-            ),
-            nn.BatchNorm2d(num_features=feature_g*16),
-            nn.ReLU(inplace=True),
-
+        self.latent_dim = latent_dim
+        
+        # Initial projection and reshape: latent_dim -> 512*4*4
+        self.init_size = 4
+        # Mapping a 128 number random noise vector into a tensor of 64 x 4 x 4 = 8192 values
+        self.fc = nn.Linear(latent_dim, feature_maps * 8 * self.init_size * self.init_size)
+        # Convolutional layers with upsampling
+        self.conv_blocks = nn.Sequential(
             # 4x4 -> 8x8
-            nn.ConvTranspose2d(
-                in_channels=feature_g*16,
-                out_channels=feature_g*8,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(num_features=feature_g*8),
-            nn.ReLU(inplace=True),
-
+            # Double spatial size of each feature map using nearest neighobour interpolation
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            #  Transposed convolution, keeping same number of channels
+            nn.Conv2d(feature_maps * 8, feature_maps * 8, 3, stride=1, padding=1),
+            # Each channel of each sample is normalised (mean = 0, var = 1). Done to stabilise gradients
+            nn.InstanceNorm2d(feature_maps * 8),
+            # Introduces nonlinearity (returns 0.2 slope for negative values aka dead neurons)
+            nn.LeakyReLU(0.2, inplace=True),
+    
             # 8x8 -> 16x16
-            nn.ConvTranspose2d(
-                in_channels=feature_g*8,
-                out_channels=feature_g*4,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(num_features=feature_g*4),
-            nn.ReLU(inplace=True),
-
+            # Double spatial size of each feature map using nearest neighobour interpolation
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            #  Transposed convolution halving number of channels as resolution increases
+            nn.Conv2d(feature_maps * 8, feature_maps * 4, 3, stride=1, padding=1),
+            # Each channel of each sample is normalised (mean = 0, var = 1). Done to stabilise gradients
+            nn.InstanceNorm2d(feature_maps * 4),
+            # Introduces nonlinearity (returns 0.2 slope for negative values aka dead neurons)
+            nn.LeakyReLU(0.2, inplace=True),
+    
             # 16x16 -> 32x32
-            nn.ConvTranspose2d(
-                in_channels=feature_g*4,
-                out_channels=feature_g*2,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(num_features=feature_g*2),
-            nn.ReLU(inplace=True),
-
+            # Double spatial size of each feature map using nearest neighobour interpolation
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            #  Transposed convolution halving number of channels as resolution increases
+            nn.Conv2d(feature_maps * 4, feature_maps * 2, 3, stride=1, padding=1),
+            # Each channel of each sample is normalised (mean = 0, var = 1). Done to stabilise gradients
+            nn.InstanceNorm2d(feature_maps * 2),
+            # Introduces nonlinearity (returns 0.2 slope for negative values aka dead neurons)
+            nn.LeakyReLU(0.2, inplace=True),
+    
             # 32x32 -> 64x64
-            nn.ConvTranspose2d(
-                in_channels=feature_g*2,
-                out_channels=feature_g,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(num_features=feature_g),
-            nn.ReLU(inplace=True),
-
-            # Still keeps output 64x64 due to stride=1, padding=1
-            nn.ConvTranspose2d(
-                in_channels=feature_g,
-                out_channels=feature_g,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(num_features=feature_g),
-            nn.ReLU(inplace=True),
-
-            # Output layer
-            nn.ConvTranspose2d(
-                in_channels=feature_g,
-                out_channels=img_channels,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-                bias=False
-            ),
-            # The last layer uses Tanh to scale the output pixel values to the range [-1, 1],
-            # matching the normalization of the real images in the dataset.
-            nn.Tanh()  # Output in range [-1, 1]
+            # Double spatial size of each feature map using nearest neighobour interpolation
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            #  Transposed convolution halving number of channels as resolution increases
+            nn.Conv2d(feature_maps * 2, feature_maps, 3, stride=1, padding=1),
+            # Each channel of each sample is normalised (mean = 0, var = 1). Done to stabilise gradients
+            nn.InstanceNorm2d(feature_maps),
+            # Introduces nonlinearity (returns 0.2 slope for negative values aka dead neurons)
+            nn.LeakyReLU(0.2, inplace=True),
+    
+            # 64x64 -> 128x128
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.Conv2d(feature_maps, feature_maps, 3, stride=1, padding=1),
+            # Each channel of each sample is normalised (mean = 0, var = 1). Done to stabilise gradients
+            nn.InstanceNorm2d(feature_maps),
+            # Introduces nonlinearity (returns 0.2 slope for negative values aka dead neurons)
+            nn.LeakyReLU(0.2, inplace=True),
+    
+            # Final conv to image
+            # No normalisation needed as image is already at full resolution
+            # Combines the 64 feature maps into a single output image channel
+            nn.Conv2d(feature_maps, img_channels, 3, stride=1, padding=1),
+            nn.Tanh()  # Output in [-1, 1]
         )
 
-    # Run the input noise vector through the set of convolutional layers defined above and return it as an image of the correct size
+
     def forward(self, z):
-        return self.model(z)
+        """
+        Parameters:
+            z: Latent vector of shape (batch_size, latent_dim)
+        Returns:
+            Generated image of shape (batch_size, img_channels, 64, 64)
+        """
+        # Pass each input z into the convolutional layers to output a full resolution, structured image
+        out = self.fc(z)
+        out = out.view(out.shape[0], -1, self.init_size, self.init_size)
+        img = self.conv_blocks(out)
+        return img
 
-
-# ----------------------
-# Discriminator / Critic (slightly deeper)
-# ----------------------
-# Downsamples because it extracts features, reducing the image to a single number
-class Discriminator(nn.Module):
-    def __init__(self, img_channels=1, feature_d=64):
-        super(Discriminator, self).__init__()
-        # Convolution block for downsampling
-        self.model = nn.Sequential(
+"""
+Critic (discriminator) Class: receives an image generated by generator and outputs a score of how 'real' the image is
+Parameters: img_channels - number of output image channels in final layer of generator (1 for grayscale)
+            feature_maps - number of feature maps in each convolutional layer
+"""
+class Critic(nn.Module):
+    def __init__(self, img_channels=1, feature_maps=64):
+        super(Critic, self).__init__()
+        
+        # Convolutional layers with downsampling
+        self.conv_blocks = nn.Sequential(
+            # 128x128 -> 64x64
+            # Halves spatial size using stride=2
+            # Common practice in WGAN-GP to have first layer of critic not be normalised 
+            nn.Conv2d(img_channels, feature_maps, 4, stride=2, padding=1),
+            # Introduces nonlinearity (returns 0.2 slope for negative values aka dead neurons)
+            nn.LeakyReLU(0.2, inplace=True),
+            
             # 64x64 -> 32x32
-            nn.Conv2d(
-                in_channels=img_channels,
-                out_channels=feature_d,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-                bias=False
-            ),
-            # LeakyReLU instead negative inputs from being zeroed in the discriminator/critic,
-            # ensuring gradients flow even for negative activations and improving GAN stability
-            nn.LeakyReLU(negative_slope=0.2, inplace=True),
-
+            # Halves spatial size using stride=2, whilst doubling number of feature maps being output
+            nn.Conv2d(feature_maps, feature_maps * 2, 4, stride=2, padding=1),
+            # Each channel of each sample is normalised (mean = 0, var = 1). Done to stabilise gradients
+            nn.InstanceNorm2d(feature_maps * 2, affine=True),
+            # Introduces nonlinearity (returns 0.2 slope for negative values aka dead neurons)
+            nn.LeakyReLU(0.2, inplace=True),
+            
             # 32x32 -> 16x16
-            nn.Conv2d(
-                in_channels=feature_d,
-                out_channels=feature_d*2,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(num_features=feature_d*2),
-            nn.LeakyReLU(negative_slope=0.2, inplace=True),
-
+            # Halves spatial size using stride=2, whilst doubling number of feature maps being output
+            nn.Conv2d(feature_maps * 2, feature_maps * 4, 4, stride=2, padding=1),
+            # Each channel of each sample is normalised (mean = 0, var = 1). Done to stabilise gradients
+            nn.InstanceNorm2d(feature_maps * 4, affine=True),
+            # Introduces nonlinearity (returns 0.2 slope for negative values aka dead neurons)
+            nn.LeakyReLU(0.2, inplace=True),
+            
             # 16x16 -> 8x8
-            # Only increase the output channels once the image gets small enough at 16x16
-            nn.Conv2d(
-                in_channels=feature_d*2,
-                out_channels=feature_d*4,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(num_features=feature_d*4),
-            nn.LeakyReLU(negative_slope=0.2, inplace=True),
-
+            # Halves spatial size using stride=2, whilst doubling number of feature maps being output
+            nn.Conv2d(feature_maps * 4, feature_maps * 8, 4, stride=2, padding=1),
+            # Each channel of each sample is normalised (mean = 0, var = 1). Done to stabilise gradients
+            nn.InstanceNorm2d(feature_maps * 8, affine=True),
+            # Introduces nonlinearity (returns 0.2 slope for negative values aka dead neurons)
+            nn.LeakyReLU(0.2, inplace=True),
+            
             # 8x8 -> 4x4
-            nn.Conv2d(
-                in_channels=feature_d*4,
-                out_channels=feature_d*8,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(num_features=feature_d*8),
-            nn.LeakyReLU(negative_slope=0.2, inplace=True),
-
-            # Extra depth layer (adds more feature extraction)
-            nn.Conv2d(
-                in_channels=feature_d*8,
-                out_channels=feature_d*8,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(num_features=feature_d*8),
-            nn.LeakyReLU(negative_slope=0.2, inplace=True),
-
-            # Last layer is not normalised as we have attained our critic score
-            # 4x4 -> 1x1
-            nn.Conv2d(
-                in_channels=feature_d*8,
-                out_channels=1,
-                kernel_size=4,
-                stride=1,
-                padding=0,
-                bias=False
-            )
+            # Halves spatial size using stride=2, whilst maintaing number of feature maps being output
+            nn.Conv2d(feature_maps * 8, feature_maps * 8, 4, stride=2, padding=1),
+            # Each channel of each sample is normalised (mean = 0, var = 1). Done to stabilise gradients
+            nn.InstanceNorm2d(feature_maps * 8, affine=True),
+            # Introduces nonlinearity (returns 0.2 slope for negative values aka dead neurons)
+            nn.LeakyReLU(0.2, inplace=True),
         )
+        
+        # Final output layer
+        # Flattening the output of critic into 1D tensor
+        self.fc = nn.Linear(feature_maps * 8 * 4 * 4, 1)
+        
+    def forward(self, img):
+        """
+        Args:
+            img: Image tensor of shape (batch_size, img_channels, 64, 64)
+        Returns:
+            Critic score of shape (batch_size, 1)
+        """
+        out = self.conv_blocks(img)
+        out = out.view(out.shape[0], -1)
+        validity = self.fc(out)
+        return validity
 
-    # view(-1) is a way of flattening the 1D tensor to the according batch size, where each element is the discriminator's score for each image.
-    def forward(self, x):
-        return self.model(x).view(-1)
 
+def compute_gradient_penalty(critic, real_imgs, fake_imgs, device):
+    """
+    Computes gradient penalty for WGAN-GP
+    
+    Args:
+        critic: Critic network
+        real_imgs: Real images
+        fake_imgs: Generated images
+        device: torch device
+    Returns:
+        Gradient penalty scalar
+    """
+    # Total images in the batch
+    batch_size = real_imgs.size(0)
+    
+    # Random weight term for interpolation
+    alpha = torch.rand(batch_size, 1, 1, 1, device=device)
+    
+    # Get interpolated images - using alpha to create images that are a mix of real and fake
+    interpolates = (alpha * real_imgs + (1 - alpha) * fake_imgs).requires_grad_(True)
+    
+    # Get critic scores for interpolated images
+    d_interpolates = critic(interpolates)
+    
+    # Get gradients
+    fake = torch.ones(batch_size, 1, device=device, requires_grad=False)
+    gradients = torch.autograd.grad(
+        outputs=d_interpolates,
+        inputs=interpolates,
+        grad_outputs=fake,
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )[0]
+    
+    # Calculate penalty
+    # Flatten each image's gradient into a 1d vector
+    gradients = gradients.view(batch_size, -1)
+    # Averages the penalty over the batch, returning a scalar ready to be added to critic loss
+    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+    
+    return gradient_penalty
+
+
+def weights_init(m):
+    """
+    Initialize network weights based to random values sampled from a normal distribution
+    Done to stabilise early training
+    """
+    classname = m.__class__.__name__
+    # Set starting mean and standand deviation for convolutional layer
+    if classname.find('Conv') != -1:
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+    # Set starting mean and standand deviation for instance norm
+    elif classname.find('InstanceNorm') != -1:
+        if m.weight is not None:  # Check if weight exists
+            nn.init.normal_(m.weight.data, 1.0, 0.02)
+        if m.bias is not None:    # Check if bias exists
+            nn.init.constant_(m.bias.data, 0)
+    # Set starting mean and standand deviation for linear layer
+    elif classname.find('Linear') != -1:
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+        if m.bias is not None:
+            nn.init.constant_(m.bias.data, 0)
+
+
+def compute_ssim(img1, img2, window_size=11, size_average=True):
+    """
+    Compute Structured Similarity Index (SSIM) between two images
+    
+    Args:
+        img1, img2: Images in range [-1, 1] or [0, 1]
+        window_size: Size of the Gaussian window
+        size_average: Whether to average the SSIM over the batch
+    Returns:
+        SSIM value
+    """
+    # Constants for stability
+    C1 = 0.01 ** 2
+    C2 = 0.03 ** 2
+    
+    # Create Gaussian window
+    sigma = 1.5
+    gauss = torch.Tensor([
+        torch.exp(torch.tensor(-(x - window_size // 2) ** 2 / float(2 * sigma ** 2)))
+        for x in range(window_size)
+    ])
+    window = gauss / gauss.sum()
+    window = window.unsqueeze(1)
+    window = window.mm(window.t()).float().unsqueeze(0).unsqueeze(0)
+    window = window.to(img1.device)
+    
+    # Ensure images are in [0, 1] range
+    if img1.min() < 0:
+        img1 = (img1 + 1) / 2
+        img2 = (img2 + 1) / 2
+    
+    # Calculate means
+    mu1 = F.conv2d(img1, window, padding=window_size // 2, groups=1)
+    mu2 = F.conv2d(img2, window, padding=window_size // 2, groups=1)
+    
+    mu1_sq = mu1.pow(2)
+    mu2_sq = mu2.pow(2)
+    mu1_mu2 = mu1 * mu2
+    
+    # Calculate variances and covariance
+    sigma1_sq = F.conv2d(img1 * img1, window, padding=window_size // 2, groups=1) - mu1_sq
+    sigma2_sq = F.conv2d(img2 * img2, window, padding=window_size // 2, groups=1) - mu2_sq
+    sigma12 = F.conv2d(img1 * img2, window, padding=window_size // 2, groups=1) - mu1_mu2
+    
+    # SSIM formula
+    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / \
+               ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+    
+    if size_average:
+        return ssim_map.mean()
+    else:
+        return ssim_map.mean(1).mean(1).mean(1)
